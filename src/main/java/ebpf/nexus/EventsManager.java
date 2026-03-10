@@ -4,14 +4,12 @@ import ebpf.nexus.core.*;
 public class EventsManager{
     private final ProgsLoader loader;
     private final EventsReader reader;
-    private final EventHandler handler;
 
 
     public EventsManager(ProgsLoader loader,EventsReader reader, EventHandler handler){
         this.loader = loader;
         this.reader = reader;
-        this.handler = handler;
-        this.reader.setHandler(this.handler);
+        this.reader.setHandler(handler);
     }
 
     public void start(){

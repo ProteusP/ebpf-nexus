@@ -13,12 +13,14 @@ public class Main {
     public static void main(String[] args) {
         
         String path = "/sys/fs/bpf/events";
-        List<String> list = new ArrayList<>();
-        list.add("cgroup_attach_task");
+        List<String> tracepoints = new ArrayList<>();
+        tracepoints.add("cgroup_attach_task");
+        List<String> syscalls = new ArrayList<>();
+
         
 
         EventsManager manager = new EventsManager(
-            new OneEventLoader(list,path), new OneEventReader(path), new LoggingHandler()
+            new OneEventLoader(tracepoints, syscalls), new OneEventReader(path), new LoggingHandler()
         );
 
         manager.start();
