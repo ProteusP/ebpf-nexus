@@ -37,6 +37,7 @@ public class OneEventLoader implements ProgsLoader{
                 attachSyscallTracepoint(syscallsProg, syscall);
             }
 
+            System.out.println("Все сисколлы загружены");
 
         } catch (IOException e){
             System.out.println(e.getMessage());

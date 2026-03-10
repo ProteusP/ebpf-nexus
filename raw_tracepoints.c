@@ -16,6 +16,7 @@ struct {
     __uint(key_size, sizeof(u32));
     __uint(value_size, sizeof(struct event));
     __uint(max_entries, 1);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } events SEC(".maps");
 
 SEC("tp_btf/cgroup_attach_task")

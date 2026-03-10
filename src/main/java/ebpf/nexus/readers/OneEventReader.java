@@ -24,7 +24,6 @@ public class OneEventReader implements EventsReader{
         byte[] key = BpfMap.bytes(0);
 
         BpfMap map = BpfMap.getPinned(mapPinPath);
-
         int cpuCount = BpfMap.CPUS;
         long[] timestamps = new long[cpuCount];
         for (int i = 0; i < cpuCount; i++){
