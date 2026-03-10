@@ -1,4 +1,4 @@
-events.o
+*.o
 vmlinux.h
 build/
 .gradle/
