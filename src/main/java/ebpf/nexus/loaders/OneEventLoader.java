@@ -2,61 +2,70 @@ package ebpf.nexus.loaders;
 import ebpf.nexus.core.ProgsLoader;
 import one.nio.os.bpf.*;
 import one.nio.os.perf.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 public class OneEventLoader implements ProgsLoader{
 
-    private BpfProg rawTpProg;
-    private BpfProg syscallsProg;
-    private Handle handle;
+    private BpfProg prog;
     private List<String> tracepoints;
-    private List<String> syscalls;
+    private List<PerfCounter> perfCounters = new ArrayList<>();
 
-    public OneEventLoader(List<String> tracepoints, List<String> syscalls){
-        this.syscalls = syscalls;
+    public OneEventLoader(List<String> tracepoints){
         this.tracepoints = tracepoints;
+    }
+
+    public BpfProg getProg(){
+        return prog;
     }
 
     @Override
     public void loadAll() {
         try {
 
-            this.rawTpProg = BpfProg.load("raw_tracepoints.o", ProgType.RAW_TRACEPOINT);
-            this.syscallsProg = BpfProg.load("syscalls.o", ProgType.TRACEPOINT);
+            this.prog = BpfProg.load("tracepoints.o", ProgType.TRACEPOINT);
 
             for (String tracepoint : tracepoints){
-                this.handle = rawTpProg.attachRawTracepoint(tracepoint);
+                attachTracepoint(tracepoint);
             }
 
             System.out.println("Все трейспоинты загружены");
-
-            // TODO:
-            for (String syscall : syscalls){
-                attachSyscallTracepoint(syscallsProg, syscall);
-            }
-
-            System.out.println("Все сисколлы загружены");
 
         } catch (IOException e){
             System.out.println(e.getMessage());
         }
     }
 
-    //TODO
+    //TODO:
     public void unloadAll(){
-        handle.close();
-
+        System.out.println("UNLOAD");
     }
 
-    private void attachSyscallTracepoint(BpfProg prog, String tracepointName) throws IOException {
+    private void attachTracepoint(String tracepointName) throws IOException {
+        
+        String[] parts = tracepointName.split(":");
+        String category = parts[0];
+        String name = parts[1];
 
-        PerfEvent event = PerfEvent.tracepoint(tracepointName);
+        String path = "/sys/kernel/debug/tracing/events/" + category + "/" + name + "/id";
+        String idStr = Files.readString(Paths.get(path)).trim();
+        
+        int tpId = Integer.parseInt(idStr);
+        
+        PerfEvent event = PerfEvent.tracepoint(tpId);
+        
+        PerfCounter leader = Perf.openGlobal(
+        event,
+        Perf.ANY_PID
+    );
+        perfCounters.add(leader);
+        int cpuCount = Runtime.getRuntime().availableProcessors();
 
-        PerfCounterGlobal counter = Perf.openGlobal(event,Perf.ANY_PID, PerfOption.period(1));
-
-        prog.attach(counter);
+        prog.attach(leader);
+        System.out.println(String.format("%s attached", tracepointName));
     }
-
 }

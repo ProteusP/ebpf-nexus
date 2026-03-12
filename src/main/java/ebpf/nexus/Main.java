@@ -6,24 +6,35 @@ import ebpf.nexus.handlers.LoggingHandler;
 import ebpf.nexus.loaders.OneEventLoader;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Scanner;
 
 public class Main {
     int cpuCount;
     
     public static void main(String[] args) {
         
-        String path = "/sys/fs/bpf/events";
         List<String> tracepoints = new ArrayList<>();
-        tracepoints.add("cgroup_attach_task");
-        List<String> syscalls = new ArrayList<>();
+        tracepoints.add("cgroup:cgroup_attach_task");
 
+        try {
         
+        OneEventLoader loader = new OneEventLoader(tracepoints);
+        loader.loadAll();
 
-        EventsManager manager = new EventsManager(
-            new OneEventLoader(tracepoints, syscalls), new OneEventReader(path), new LoggingHandler()
-        );
+        OneEventReader reader = new OneEventReader(loader.getProg(), "meta_map", "event_map");
 
-        manager.start();
+        LoggingHandler handler = new LoggingHandler();
+
+        reader.setHandler(handler);
+
+        reader.start();
+
+        Scanner scanner = new Scanner(System.in);
+        scanner.nextLine();
+        }
+        catch (Exception e){
+            e.printStackTrace();
+        }
     }
 
 }
