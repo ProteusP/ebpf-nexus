@@ -64,7 +64,7 @@ public class OneEventLoader implements ProgsLoader{
     );
         perfCounters.add(leader);
         int cpuCount = Runtime.getRuntime().availableProcessors();
-
+        
         prog.attach(leader);
         System.out.println(String.format("%s attached", tracepointName));
     }

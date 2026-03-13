@@ -15,6 +15,7 @@ public class Main {
         
         List<String> tracepoints = new ArrayList<>();
         tracepoints.add("cgroup:cgroup_attach_task");
+        tracepoints.add("syscalls:sys_enter_sched_setattr");
 
         try {
         

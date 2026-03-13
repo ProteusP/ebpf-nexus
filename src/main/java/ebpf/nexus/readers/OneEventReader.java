@@ -29,6 +29,8 @@ public class OneEventReader implements EventsReader{
     private ByteBuffer consumedBuffer;
     private final int cpuCount;
     
+    private long[] lastSeq;
+    
     public OneEventReader(BpfProg prog, String metaMapName, String dataMapName) throws IOException{
         this.prog = prog;
         this.metaMapName = metaMapName;
@@ -38,6 +40,10 @@ public class OneEventReader implements EventsReader{
         this.producedKeyBytes = BpfMap.bytes(PRODUCED_KEY);
         this.consumedKeyBytes = BpfMap.bytes(CONSUMED_KEY);
         
+        this.lastSeq = new long[cpuCount];
+        for (int cpu = 0; cpu < cpuCount; cpu++){
+            lastSeq[cpu] = 1;
+        }
         findMaps();
     }
 
@@ -118,8 +124,8 @@ public class OneEventReader implements EventsReader{
             if (processSingleEvent(cpu, consumed)){
                 consumed++;
                 processed = true;
-            }else{
-                consumed++; // Скипаем событие если оно не нашлось по ключу
+             }else{
+                break;
             }
         }
 
@@ -146,7 +152,16 @@ public class OneEventReader implements EventsReader{
         }
 
         Event event = new Event();
-        event.readFromBytes(eventData);
+        event.readFromBytes(eventData, eventOffset);
+
+        long eventSeq = event.seq_num;
+        int  eventCpu = event.cpu_id;
+
+        if (eventSeq < lastSeq[cpu] || eventCpu != cpu){
+            return false;
+        }else{
+            lastSeq[cpu] = eventSeq;
+        }
         handler.handle(event);
 
         return true;

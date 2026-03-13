@@ -17,6 +17,7 @@ public class EventsManager{
         reader.start();
     }
 
+    // TODO:
     //public void stop() ???
 
 }

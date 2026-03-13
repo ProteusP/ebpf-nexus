@@ -3,6 +3,7 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 
+#define barrier() __asm__ __volatile__("": : :"memory")
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -21,10 +22,20 @@ enum tracepoint_id {
 u32 PRODUCED_KEY = 0;
 u32 CONSUMED_KEY = 1;
 u64 INIT_META = 0;
+u32 SEQ_KEY = 0;
 
-// 9 полей
-// обязательно дополнять отступом для выравнивания по 16!!!!!!!
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} event_seq_map SEC(".maps");
+
 struct event{
+    u64 seq_num;
+
+    u32 cpu_id;
+
     u64 timestamp;
 
     u32 tracepoint_id;
@@ -41,8 +52,7 @@ struct event{
 
     u32 who_value;
 
-    u64 padding;
-};
+}__attribute__((packed, aligned(64)));
 
 struct {
 __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
@@ -58,13 +68,14 @@ __type(key, u32);
 __type(value, struct event);
 } event_map SEC(".maps");
 
-static void update_event(struct event* event, u32 tracepoint_id, u32 pid, u64 cgroup_id, s32 nice_value, u32 scheduler_policy, u32 which_value, u32 who_value){
+static void update_event(struct event* event, u64 seq_num, u32 tracepoint_id, u32 pid, u64 cgroup_id, s32 nice_value, u32 scheduler_policy, u32 which_value, u32 who_value){
     if (event == NULL){
         return;
     }
 
     event->timestamp = bpf_ktime_get_ns();
-
+    event->seq_num = seq_num;
+    event->cpu_id = bpf_get_smp_processor_id();
     event->tracepoint_id = tracepoint_id;
     event->pid = pid;
     event->cgroup_id = cgroup_id;
@@ -72,14 +83,12 @@ static void update_event(struct event* event, u32 tracepoint_id, u32 pid, u64 cg
     event->scheduler_policy = scheduler_policy;
     event->which_value = which_value;
     event->who_value = who_value;
-    event->padding = 0;
 }
 
 static struct event* get_next_event_slot(void *ctx){
 
     bpf_map_update_elem(&meta_map, &PRODUCED_KEY, &INIT_META, BPF_NOEXIST);
     bpf_map_update_elem(&meta_map, &CONSUMED_KEY, &INIT_META, BPF_NOEXIST);
-
     u64 *produced_ptr = bpf_map_lookup_elem(&meta_map, &PRODUCED_KEY);
     u64 *consumed_ptr = bpf_map_lookup_elem(&meta_map, &CONSUMED_KEY);
     
@@ -119,17 +128,48 @@ static void commit_event(void* ctx){
 }
 
 SEC("tp/cgroup/cgroup_attach_task")
-int BPF_PROG(handle_cgroup_attach, int dst_root, int dst_level, u64 dst_id, int pid){
+int BPF_PROG(cgroup_attach, int dst_root, int dst_level, u64 dst_id, int pid){
     
     struct event *event = get_next_event_slot(ctx);
     if (!event) {
-        return 0; // Нет места в буфере
+        return 0;
     }
 
-    update_event(event, TP_CGROUP_ATTACH_TASK, pid, dst_id,0,0,0,0);
+    u64 *seq = bpf_map_lookup_elem(&event_seq_map, &SEQ_KEY);
+    if (!seq) return 0;
     
+    if (*seq == 0) {
+        (*seq) = 1;
+    }
+
+    u64 current_seq = *seq;
+    (*seq)++;
+
+    update_event(event, current_seq, TP_CGROUP_ATTACH_TASK, pid, dst_id,0,0,0,0);
+
+    barrier();
+
     commit_event(ctx);
 
     return 0;
 }
 
+// SEC("tp/syscalls/sys_enter_sched_setattr")
+// int BPF_PROG(handle_sys_sched_setattr, int __syscall_nr, pid_t pid, struct sched_attr* uattr, int flags){
+
+//     struct event *event = get_next_event_slot(ctx);
+//     if (!event) {
+//         return 0; // Нет места в буфере
+//     }
+
+//     s32 nice_value = BPF_CORE_READ(uattr, sched_nice);
+//     u32 scheduler_policy = BPF_CORE_READ(uattr, sched_policy);
+
+//     update_event(event, TP_SCHED_SETATTR, (u32)pid, 0, nice_value, scheduler_policy,0,0);
+
+//     barrier();
+
+//     commit_event(ctx);
+
+//     return 0;
+// }
