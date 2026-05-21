@@ -1,6 +1,7 @@
-*.o
-vmlinux.h
+ebpf/src/vmlinux.h
 build/
 .gradle/
-libs/one-nio.jar
+nexus-java/src/main/resources/lib/one-nio.jar
 .idea
+.DS_Store
+.vscode/
