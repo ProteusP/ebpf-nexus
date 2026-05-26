@@ -102,7 +102,7 @@ public class StateManager implements EventHandler {
 
         try {
             StateSnapshot freshSnapshot = procfsReader.readFullState();
-            log.info("Snapshot completed, {} processes", freshSnapshot.processes.size());
+            log.info("Snapshot completed, {} processes", freshSnapshot.getProcesses().size());
 
             List<Event> bufferedEvents = eventBuffer.drain(lastSnapshotEndTime);
             log.info("Applying {} buffered events to snapshot", bufferedEvents.size());
@@ -114,7 +114,7 @@ public class StateManager implements EventHandler {
             if (currentState != null) {
                 diffAndNotify(currentState, freshSnapshot);
             } else {
-                for (ProcessInfo p : freshSnapshot.processes.values()) {
+                for (ProcessInfo p : freshSnapshot.getProcesses().values()) {
                     notifyProcessCreated(p);
                 }
             }
@@ -144,26 +144,26 @@ public class StateManager implements EventHandler {
     private void applyEventToSnapshot(StateSnapshot snapshot, Event event) {
         switch (event.getTpId()) {
             case 0: // TP_SCHED_SETATTR
-                ProcessInfo proc0 = snapshot.processes.get(event.getPid());
+                ProcessInfo proc0 = snapshot.getProcesses().get(event.getPid());
                 if (proc0 != null) {
-                    proc0.nice = event.getNiceValue();
-                    proc0.schedulerPolicy = event.getSchedulerPolicy();
+                    proc0.setNice(event.getNiceValue());
+                    proc0.setSchedulerPolicy(event.getSchedulerPolicy());
                 }
                 break;
 
             case 1: // TP_SCHED_SETSCHEDULER
-                ProcessInfo proc1 = snapshot.processes.get(event.getPid());
+                ProcessInfo proc1 = snapshot.getProcesses().get(event.getPid());
                 if (proc1 != null) {
-                    proc1.schedulerPolicy = event.getSchedulerPolicy();
+                    proc1.setSchedulerPolicy(event.getSchedulerPolicy());
                 }
                 break;
 
             case 2: // TP_SETPRIORITY
                 // which_value: PRIO_PROCESS=0, PRIO_PGRP=1, PRIO_USER=2
                 if (event.getWhichValue() == 0) { // PRIO_PROCESS - affects single pid
-                    ProcessInfo proc2 = snapshot.processes.get(event.getWhoValue());
+                    ProcessInfo proc2 = snapshot.getProcesses().get(event.getWhoValue());
                     if (proc2 != null) {
-                        proc2.nice = event.getNiceValue();
+                        proc2.setNice(event.getNiceValue());
                     }
                 }
                 // PRIO_PGRP and PRIO_USER require iterating all processes
@@ -175,9 +175,9 @@ public class StateManager implements EventHandler {
                 break;
 
             case 4: // TP_CGROUP_ATTACH_TASK
-                ProcessInfo proc4 = snapshot.processes.get(event.getPid());
+                ProcessInfo proc4 = snapshot.getProcesses().get(event.getPid());
                 if (proc4 != null) {
-                    proc4.cgroupId = event.getCgroupId();
+                    proc4.setCgroupId(event.getCgroupId());
                 }
                 break;
 
@@ -195,8 +195,8 @@ public class StateManager implements EventHandler {
      * Compares two snapshots and notifies callbacks for detected changes.
      */
     private void diffAndNotify(StateSnapshot oldState, StateSnapshot newState) {
-        for (ProcessInfo newProc : newState.processes.values()) {
-            ProcessInfo oldProc = oldState.processes.get(newProc.pid);
+        for (ProcessInfo newProc : newState.getProcesses().values()) {
+            ProcessInfo oldProc = oldState.getProcesses().get(newProc.getPid());
 
             if (oldProc == null) {
                 notifyProcessCreated(newProc);
@@ -205,14 +205,14 @@ public class StateManager implements EventHandler {
             }
         }
 
-        for (int oldPid : oldState.processes.keySet()) {
-            if (!newState.processes.containsKey(oldPid)) {
+        for (int oldPid : oldState.getProcesses().keySet()) {
+            if (!newState.getProcesses().containsKey(oldPid)) {
                 notifyProcessTerminated(oldPid);
             }
         }
 
-        for (CgroupInfo newCgroup : newState.cgroups.values()) {
-            CgroupInfo oldCgroup = oldState.cgroups.get(newCgroup.getId());
+        for (CgroupInfo newCgroup : newState.getCgroups().values()) {
+            CgroupInfo oldCgroup = oldState.getCgroups().get(newCgroup.getId());
 
             if (oldCgroup == null) {
                 // onCgroupCreated(newCgroup) - not yet implemented

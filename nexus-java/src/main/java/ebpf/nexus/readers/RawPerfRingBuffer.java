@@ -59,6 +59,8 @@ public class RawPerfRingBuffer implements Closeable {
     /** Mask for wrapping positions within the ring buffer ({@code dataSize - 1}). */
     private final long mask;
 
+    private final PerfCounter counter;
+
     /**
      * Creates a reader for the given perf counter by mmap-ing its ring buffer.
      *
@@ -77,7 +79,7 @@ public class RawPerfRingBuffer implements Closeable {
                 totalSize,
                 Mem.PROT_READ | Mem.PROT_WRITE,
                 Mem.MAP_SHARED,
-                counter.fd,
+                counter.getFd(),
                 0
         );
 

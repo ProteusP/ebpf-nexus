@@ -16,6 +16,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class EventBuffer {
 
     private final List<Event> buffer = new CopyOnWriteArrayList<>();
+    private long bufferStartTime;
 
     /**
      * Clears the buffer and records the start time of a new snapshot cycle.

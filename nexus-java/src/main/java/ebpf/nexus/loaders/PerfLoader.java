@@ -146,13 +146,13 @@ public class PerfLoader implements ProgsLoader {
                     throw new IOException("Failed to open perf counter for CPU " + cpu);
                 }
 
-                log.info("CPU {} counter opened, fd={}", cpu, counter.fd);
+                log.info("CPU {} counter opened, fd={}", cpu, counter.getFd());
 
                 // Store counter fd into the perf event array at key = cpu.
                 // When eBPF calls bpf_perf_event_output(&events, BPF_F_CURRENT_CPU, ...),
                 // the kernel reads events[cpu] to find this fd and writes data into
                 // the counter's ring buffer.
-                byte[] value = BpfMap.bytes(counter.fd);
+                byte[] value = BpfMap.bytes(counter.getFd());
                 boolean ok = perfEventArray.put(key, value);
                 if (!ok) {
                     counter.close();
@@ -369,9 +369,8 @@ public class PerfLoader implements ProgsLoader {
 
         log.info("Unloaded all components");
     }
-}
 
-private void loadAndAttachTracepoint(String name, String fullSpec) {
+    private void loadAndAttachTracepoint(String name, String fullSpec) {
     String category = fullSpec.split(":")[0];
     try {
         if (SYSCALLS_CATEGORY.equals(category)) {
@@ -383,4 +382,5 @@ private void loadAndAttachTracepoint(String name, String fullSpec) {
         log.error("Failed to load/attach tracepoint: {}", fullSpec, e);
         // Continue with other tracepoints
     }
+}
 }

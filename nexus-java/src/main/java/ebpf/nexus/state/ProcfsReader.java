@@ -39,10 +39,10 @@ public class ProcfsReader {
 
         readAllProcesses(snapshot);
 
-        snapshot.snapshotTimestamp = System.currentTimeMillis();
+        snapshot.setSnapshotTimestamp(System.currentTimeMillis());
         log.info("Snapshot completed in {}ms, {} processes",
-                snapshot.snapshotTimestamp - startTime,
-                snapshot.processes.size());
+                snapshot.getSnapshotTimestamp() - startTime,
+                snapshot.getProcesses().size());
 
         return snapshot;
     }
@@ -71,7 +71,7 @@ public class ProcfsReader {
                 int pid = Integer.parseInt(processDir.getName());
                 ProcessInfo info = readProcessInfo(pid);
                 if (info != null) {
-                    snapshot.processes.put(pid, info);
+                    snapshot.getProcesses().put(pid, info);
                 }
             } catch (Exception e) {
                 // Process died between listFiles and readProcessInfo - skip
@@ -97,7 +97,7 @@ public class ProcfsReader {
      */
     private ProcessInfo readProcessInfo(int pid) throws IOException {
         ProcessInfo info = new ProcessInfo();
-        info.pid = pid;
+        info.setPid(pid);
 
         // Read /proc/[pid]/stat
         // Format: pid (comm) state ppid ... nice ... policy ...
@@ -117,7 +117,7 @@ public class ProcfsReader {
         }
 
         // Extract comm between the outermost parentheses
-        info.comm = statContent.substring(leftParen + 1, rightParen);
+        info.setComm(statContent.substring(leftParen + 1, rightParen));
 
         // Split everything after ") " into fields
         // The format is: "pid (comm) state ppid pgrp session tty_nr tpgid flags
@@ -133,13 +133,13 @@ public class ProcfsReader {
         // 0=state, 1=ppid, ..., 16=nice (field index 18 in full stat), ..., 38=policy (field index 40 in full stat)
         if (rest.length < 40) return null;
 
-        info.state = parseState(rest[0].charAt(0));
-        info.ppid = Integer.parseInt(rest[1]);
-        info.nice = Integer.parseInt(rest[16]);
-        info.schedulerPolicy = Integer.parseInt(rest[38]);
+        info.setState(parseState(rest[0].charAt(0)));
+        info.setPpid(Integer.parseInt(rest[1]));
+        info.setNice(Integer.parseInt(rest[16]));
+        info.setSchedulerPolicy(Integer.parseInt(rest[38]));
 
         // Read cgroup membership from /proc/[pid]/cgroup
-        info.cgroupId = readCgroupInode(pid);
+        info.setCgroupId( readCgroupInode(pid));
 
         return info;
     }
