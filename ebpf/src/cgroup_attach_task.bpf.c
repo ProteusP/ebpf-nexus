@@ -18,22 +18,48 @@ struct {
     __uint(key_size, sizeof(__u32));
     __uint(value_size, sizeof(__u32));
     __uint(max_entries, 256);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, u64);
+    __type(value, u8);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} tracked_cgroups SEC(".maps");
 
 /*
  * Raw tracepoint: cgroup:cgroup_attach_task
- * args[0] = dst_cgrp_id
- * args[1] = pid
+ *
+ * TP_PROTO(struct cgroup *dst_cgrp, const char *path,
+ *          struct task_struct *task, bool threadgroup)
+ *
+ * args[0] = struct cgroup *dst_cgrp
+ * args[1] = const char *path
+ * args[2] = struct task_struct *task
+ * args[3] = bool threadgroup
  */
 SEC("raw_tracepoint/cgroup_attach_task")
 int trace_cgroup_attach_task(struct bpf_raw_tracepoint_args *ctx) {
+    /* Zero is a key for all groups flag */
+    u64 cgroup_id = bpf_get_current_cgroup_id();
+    u8 *tracked = bpf_map_lookup_elem(&tracked_cgroups, &cgroup_id);
+    if (!tracked) {
+        u64 zero = 0;
+        u8 *trackAll = bpf_map_lookup_elem(&tracked_cgroups, &zero);
+        if (!trackAll) return 0;
+    }
     struct event evt = {};
+    struct task_struct *task = (struct task_struct *)ctx->args[2];
+    struct cgroup *cgrp = (struct cgroup *)ctx->args[0];
 
     evt.timestamp = bpf_ktime_get_ns();
     evt.tracepoint_id = TP_CGROUP_ATTACH_TASK;
     evt.cpu_id = bpf_get_smp_processor_id();
-    evt.pid = (u32) ctx->args[1];
-    evt.cgroup_id = ctx->args[0];
+
+    BPF_CORE_READ_INTO(&evt.pid, task, pid);
+    BPF_CORE_READ_INTO(&evt.cgroup_id, cgrp, kn, id);
 
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
     return 0;

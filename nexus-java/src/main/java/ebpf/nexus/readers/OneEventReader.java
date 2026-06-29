@@ -57,13 +57,13 @@ public class OneEventReader implements EventsReader {
                 for (int cpu = 0; cpu < cpuCount; cpu++) {
                     if (ringBuffers[cpu] == null) continue;
 
-                    int len = ringBuffers[cpu].readRaw(buffer);
-                    if (len > 0) {
+                    int len;
+                    while ((len = ringBuffers[cpu].readRaw(buffer)) > 0) {
                         gotEvents = true;
 
                         Event event = new Event();
                         event.readFromBytes(buffer, 0);
-
+                        log.debug("Event is {}",event);
                         if (handler != null) {
                             handler.handle(event);
                         }

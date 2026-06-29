@@ -30,12 +30,12 @@ struct event {
     u64 timestamp;          /* nanoseconds since boot (bpf_ktime_get_ns) */
     u32 tracepoint_id;      /* enum tracepoint_id */
     u32 cpu_id;             /* CPU that generated the event */
-    u32 pid;                /* process id */
+    u32 pid;                /* process id (thread id) */
     /* 4 bytes implicit padding */
     u64 cgroup_id;          /* cgroup identifier */
     s32 nice_value;         /* niceness value (-20..19) */
     u32 scheduler_policy;   /* SCHED_NORMAL, SCHED_FIFO, SCHED_RR, SCHED_BATCH, SCHED_IDLE, SCHED_DEADLINE */
-    u32 which_value;        /* generic 'which' argument (PRIO_PROCESS, PRIO_PGRP, PRIO_USER, IOPRIO_WHO_PROCESS, IOPRIO_WHO_PGRP, IOPRIO_WHO_USER) */
+    u32 which_value;        /* generic 'which' argument (PRIO_PROCESS, PRIO_PGRP, PRIO_USER, IOPRIO_WHO_PROCESS, IOPRIO_WHO_PGRP, IOPRIO_WHO_USER) or extra*/ 
     u32 who_value;          /* generic 'who' argument (pid, pgid, uid depending on which) */
 };
 

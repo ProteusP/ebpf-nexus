@@ -42,7 +42,7 @@ public class CgroupInfo {
      */
     public boolean hasChangedFrom(CgroupInfo other) {
         if (other == null) return true;
-        return !this.path.equals(other.path)
+        return !Objects.equals(this.path, other.path)
                 || this.hierarchyId != other.hierarchyId;
     }
 

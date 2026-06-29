@@ -58,7 +58,7 @@ public class ProcessInfo {
     public boolean hasChangedFrom(ProcessInfo other) {
         if (other == null) return true;
         return this.ppid != other.ppid
-                || !this.comm.equals(other.comm)
+                || !Objects.equals(this.comm, other.comm)
                 || this.nice != other.nice
                 || this.schedulerPolicy != other.schedulerPolicy
                 || this.cgroupId != other.cgroupId

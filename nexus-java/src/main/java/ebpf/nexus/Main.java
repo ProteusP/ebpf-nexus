@@ -39,7 +39,8 @@ public class Main {
             PerfLoader loader = new PerfLoader(
                     config.getTracepoints(),
                     config.getBpfObjectDir(),
-                    config.getRingBuffer().getDataPages()
+                    config.getRingBuffer().getDataPages(),
+                    config.getTrackedCgroups()
             );
             loader.loadAll();
 

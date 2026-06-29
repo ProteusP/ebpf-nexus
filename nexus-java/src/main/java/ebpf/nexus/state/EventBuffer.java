@@ -16,14 +16,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class EventBuffer {
 
     private final List<Event> buffer = new CopyOnWriteArrayList<>();
-    private long bufferStartTime;
-
+    private volatile long nanoOffset;
+    
     /**
-     * Clears the buffer and records the start time of a new snapshot cycle.
-     * Events with timestamps before this point will be filtered out.
+     * Clears the buffer at the start of a new snapshot cycle.
      */
     public void startBuffering() {
-        bufferStartTime = System.currentTimeMillis();
         buffer.clear();
     }
 
@@ -35,16 +33,25 @@ public class EventBuffer {
     }
 
     /**
+     * Sets the offset between eBPF timestamps and Java nanoTime.
+     * Called when the first event arrives.
+     */
+    public void calibrate(long bpfTimestampNanos) {
+        this.nanoOffset = bpfTimestampNanos - System.nanoTime();
+    }
+
+    /**
      * Drains all events with a timestamp greater than the given threshold.
      *
-     * @param sinceTimestamp keep only events newer than this
+     * @param sinceNanoTime keep only events newer than this
      * @return list of matching events in insertion order
      */
-    public List<Event> drain(long sinceTimestamp) {
+    public List<Event> drain(long sinceNanoTime) {
+        long thresholdNanos = sinceNanoTime + nanoOffset;
         List<Event> result = new ArrayList<>();
 
         for (Event event : buffer) {
-            if (event.getTimestamp() > sinceTimestamp) {
+            if (event.getTimestamp() > thresholdNanos) {
                 result.add(event);
             }
         }

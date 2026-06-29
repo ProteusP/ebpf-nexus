@@ -27,65 +27,41 @@ import org.slf4j.LoggerFactory;
  * Loads eBPF programs and configures perf_event infrastructure
  * for receiving events from kernel tracepoints.
  *
- * <p>Supports two attachment methods depending on the tracepoint category:
+ * <p>Two attachment methods:
  * <ul>
- *   <li><b>Raw tracepoints</b> ({@code cgroup}, {@code sched}, etc.) -
- *       loaded as {@code RAW_TRACEPOINT} and attached via
- *       {@code BPF_RAW_TRACEPOINT_OPEN}.</li>
- *   <li><b>Syscall tracepoints</b> ({@code syscalls:*}) -
- *       loaded as {@code TRACEPOINT} and attached via
- *       {@code perf_event_open()} because {@code BPF_RAW_TRACEPOINT_OPEN}
- *       does not support syscall tracepoints on kernels prior to 6.x.</li>
+ *   <li><b>Raw tracepoints</b> ({@code cgroup:*}) -
+ *       loaded as {@code RAW_TRACEPOINT}, attached via {@code BPF_RAW_TRACEPOINT_OPEN}.</li>
+ *   <li><b>Sys_enter</b> - loaded as {@code TRACEPOINT}, attached via
+ *       {@code perf_event_open()} + {@code PERF_EVENT_IOC_SET_BPF}.
+ *       Uses a single program that filters by syscall number internally.</li>
  * </ul>
- *
- * <p>Event delivery chain:
- * <ol>
- *   <li>eBPF program writes events to {@code BPF_MAP_TYPE_PERF_EVENT_ARRAY} ("events")</li>
- *   <li>Each CPU has a {@link PerfCounter} whose fd is stored in the map at key=cpu</li>
- *   <li>When eBPF calls {@code bpf_perf_event_output(&events, BPF_F_CURRENT_CPU, ...)},
- *       the kernel looks up {@code events[cpu]} to find the target fd and writes
- *       directly into that counter's ring buffer</li>
- *   <li>{@link RawPerfRingBuffer} reads the raw event data from the ring buffer via mmap</li>
- * </ol>
  */
 public class PerfLoader implements ProgsLoader {
 
     private static final Logger log = LoggerFactory.getLogger(PerfLoader.class);
 
-    /** Number of data pages per CPU ring buffer */
-     private final int dataPages;
-
-    /** Directory where compiled {@code .o} files reside. */
+    private final int dataPages;
     private final String bpfObjectDir;
 
-    /** Debugfs mount point for reading tracepoint IDs. */
     private static final String DEBUGFS = "/sys/kernel/debug";
-
-    /** Syscall tracepoints have category "syscalls". */
-    private static final String SYSCALLS_CATEGORY = "syscalls";
-
-    /** Invalid file descriptor constant. */
     private static final int INVALID_FD = -1;
+    private static final String PIN_PATH = "/sys/fs/bpf/events";
 
-    /** Map from tracepoint name to its full "category:name" specification. */
+    /** Name of the combined syscall program - attached via perf_event_open. */
+    private static final String SYSCALL_PROG_NAME = "sys_enter";
+
     private final Map<String, String> tracepointSpecs;
 
     private final List<PerfCounter> perfCounters = new ArrayList<>();
     private final List<Handle> tracepointLinks = new ArrayList<>();
     private final List<PerfCounter> syscallAttachCounters = new ArrayList<>();
     private final List<BpfProg> loadedPrograms = new ArrayList<>();
+    private final List<Long> trackedCgroups;
 
     private BpfMap perfEventArray;
     private RawPerfRingBuffer[] ringBuffers;
 
-    /**
-     * Creates a loader for the given list of tracepoints.
-     *
-     * @param tracepoints tracepoint names in {@code "category:name"} format,
-     *                    e.g. {@code "cgroup:cgroup_attach_task"},
-     *                    {@code "syscalls:sys_enter_sched_setattr"}
-     */
-    public PerfLoader(List<String> tracepoints, String bpfObjectDir, int dataPages) {
+    public PerfLoader(List<String> tracepoints, String bpfObjectDir, int dataPages, List<Long> trackedCgroups) {
         this.tracepointSpecs = new LinkedHashMap<>();
         for (String tp : tracepoints) {
             String[] parts = tp.split(":");
@@ -94,6 +70,7 @@ public class PerfLoader implements ProgsLoader {
         }
         this.bpfObjectDir = bpfObjectDir;
         this.dataPages = dataPages;
+        this.trackedCgroups = trackedCgroups;
     }
 
     public RawPerfRingBuffer[] getRingBuffers() {
@@ -103,25 +80,71 @@ public class PerfLoader implements ProgsLoader {
     @Override
     public void loadAll() {
         try {
-            // Step 1 - create the shared perf event array map (once for all programs)
-            perfEventArray = BpfMap.newPerfEventArray("events", 0);
-            if (perfEventArray == null) {
-                throw new IOException("Failed to create perf event array map");
-            }
-            log.info("Perf event array created, fd={}", perfEventArray.fd());
-
-            // Step 2 - create per-CPU perf counters backed by ring buffers,
-            // and store each counter's fd into the perf event array map.
-            // This MUST be done BEFORE loading programs to avoid race conditions
-            // where eBPF programs try to write to empty map slots.
             int cpuCount = Cpus.COUNT;
             ringBuffers = new RawPerfRingBuffer[cpuCount];
 
+            // Step 1 - load the first eBPF program
+            Map.Entry<String, String> firstEntry = tracepointSpecs.entrySet().iterator().next();
+            String firstName = firstEntry.getKey();
+
+            BpfProg firstProg = loadProgram(firstName);
+            log.info("First eBPF program loaded: {} ({})", firstProg.name, objectPathFor(firstName));
+
+            // Step 2 - open the pinned map created by the first program
+            try {
+                perfEventArray = BpfMap.getPinned(PIN_PATH);
+                log.info("Opened pinned events map, fd={}", perfEventArray.fd());
+            } catch (IOException e) {
+                throw new IOException(
+                        "Failed to open pinned events map at " + PIN_PATH + ". "
+                        + "Ensure every .bpf.c declares __uint(pinning, LIBBPF_PIN_BY_NAME).", e);
+            }
+
+            // Step 2.5 - create cgroup filter map BEFORE loading remaining programs
+            // so libbpf can find it by name and reuse it
+            String cgroupPinPath = "/sys/fs/bpf/tracked_cgroups"; // TODO: мб вынести куда-то
+            BpfMap trackedMap = null;
+
+            try {
+                trackedMap = BpfMap.newMap(
+                    one.nio.os.bpf.MapType.HASH,
+                    8,   // key_size: u64 cgroup_id
+                    1,   // value_size: u8 flag
+                    256, // max_entries
+                    "tracked_cgroups",
+                    0
+                );
+                trackedMap.pin(cgroupPinPath);
+                log.info("Cgroup filter map created and pinned to {}", cgroupPinPath);
+            } catch (IOException e) {
+                // Map may already be pinned from a previous run
+                log.debug("Cgroup filter map already exists, reopening: {}", cgroupPinPath);
+                try {
+                    trackedMap = BpfMap.getPinned(cgroupPinPath);
+                } catch (IOException ex) {
+                    log.error("Failed to open cgroup filter map", ex);
+                }
+            }
+
+            if (trackedMap != null) {
+                byte[] flag = new byte[]{1};
+                if (trackedCgroups != null && !trackedCgroups.isEmpty()) {
+                    for (long cgroupId : trackedCgroups) {
+                        trackedMap.put(BpfMap.bytes(cgroupId), flag);
+                    }
+                    log.info("Cgroup filter enabled: {} cgroups tracked", trackedCgroups.size());
+                } else {
+                    // Sentinel key 0 -> track all
+                    trackedMap.put(BpfMap.bytes(0L), flag);
+                    log.info("Cgroup filter: tracking all (sentinel set)");
+                }
+            }
+
+            // Step 3 - fill every CPU slot with a perf counter fd
             for (int cpu = 0; cpu < cpuCount; cpu++) {
                 byte[] key = BpfMap.bytes(cpu);
 
                 if (!Cpus.ONLINE.get(cpu)) {
-                    // Store invalid fd for offline CPUs to prevent eBPF from trying to use them
                     byte[] value = BpfMap.bytes(INVALID_FD);
                     boolean ok = perfEventArray.put(key, value);
                     if (!ok) {
@@ -131,15 +154,13 @@ public class PerfLoader implements ProgsLoader {
                     continue;
                 }
 
-                // Open perf counter with freq(1) - required for ring buffer allocation.
-                // The freq value itself is irrelevant; it only triggers useRingBuffer=true
-                // inside Perf.createRingBuffer(). eBPF controls when events are sent.
                 PerfCounter counter = Perf.open(
                         PerfEvent.SW_BPF_OUTPUT,
                         Perf.ANY_PID,
                         cpu,
                         PerfOption.pages(dataPages),
-                        PerfOption.freq(1)
+                        PerfOption.freq(1),
+                        PerfOption.SAMPLE_RAW
                 );
 
                 if (counter == null) {
@@ -148,10 +169,6 @@ public class PerfLoader implements ProgsLoader {
 
                 log.info("CPU {} counter opened, fd={}", cpu, counter.getFd());
 
-                // Store counter fd into the perf event array at key = cpu.
-                // When eBPF calls bpf_perf_event_output(&events, BPF_F_CURRENT_CPU, ...),
-                // the kernel reads events[cpu] to find this fd and writes data into
-                // the counter's ring buffer.
                 byte[] value = BpfMap.bytes(counter.getFd());
                 boolean ok = perfEventArray.put(key, value);
                 if (!ok) {
@@ -163,10 +180,26 @@ public class PerfLoader implements ProgsLoader {
                 perfCounters.add(counter);
             }
 
-            // Step 3 - load and attach each tracepoint individually.
-            // All map slots are now properly initialized, so eBPF programs can safely write.
+            // Step 4 - attach the first program
+            attachProgram(firstProg, firstName);
+
+            // Step 5 - load and attach remaining programs
+            boolean firstSkipped = false;
             for (Map.Entry<String, String> entry : tracepointSpecs.entrySet()) {
-                loadAndAttachTracepoint(entry.getKey(), entry.getValue());
+                if (!firstSkipped) {
+                    firstSkipped = true;
+                    continue;
+                }
+
+                String name = entry.getKey();
+                String fullSpec = entry.getValue();
+
+                try {
+                    BpfProg prog = loadProgram(name);
+                    attachProgram(prog, name);
+                } catch (IOException e) {
+                    log.error("Failed to load/attach tracepoint: {}", fullSpec, e);
+                }
             }
 
             if (tracepointLinks.isEmpty() && syscallAttachCounters.isEmpty()) {
@@ -182,101 +215,68 @@ public class PerfLoader implements ProgsLoader {
             log.error("Failed to initialize perf infrastructure", e);
 
             if (perfEventArray != null) {
-            try {
-                perfEventArray.close();
-            } catch (Exception closeEx) {
-                log.warn("Error closing perf event array after failed init", closeEx);
+                try { perfEventArray.close(); } catch (Exception ex) { log.warn("Error closing perf event array", ex); }
             }
-        }
-
-        // Also close any counters that were already created
-        for (PerfCounter pc : perfCounters) {
-            if (pc != null) {
-                try {
-                    pc.close();
-                } catch (Exception closeEx) {
-                    log.warn("Error closing perf counter after failed init", closeEx);
+            for (PerfCounter pc : perfCounters) {
+                if (pc != null) {
+                    try { pc.close(); } catch (Exception ex) { log.warn("Error closing perf counter", ex); }
                 }
             }
-        }
         }
     }
 
     /**
-     * Attaches a non-syscall tracepoint using {@code BPF_RAW_TRACEPOINT_OPEN}.
-     * Works for categories like {@code cgroup}, {@code sched}, etc.
+     * Loads a program as RAW_TRACEPOINT (for cgroup) or TRACEPOINT (for sys_enter).
      */
-    private void attachRawTracepoint(String name) throws IOException {
+    private BpfProg loadProgram(String name) throws IOException {
+        ProgType type = SYSCALL_PROG_NAME.equals(name) ? ProgType.TRACEPOINT : ProgType.RAW_TRACEPOINT;
         String objectPath = objectPathFor(name);
-        BpfProg prog = null;
+        BpfProg prog = BpfProg.load(objectPath, type);
+        if (prog == null) {
+            throw new IOException("Failed to load eBPF program from " + objectPath);
+        }
+        loadedPrograms.add(prog);
+        log.info("eBPF program loaded: {} ({})", prog.name, objectPath);
+        return prog;
+    }
 
-        try {
-            prog = BpfProg.load(objectPath, ProgType.RAW_TRACEPOINT);
-            if (prog == null) {
-                throw new IOException("Failed to load eBPF program from " + objectPath);
-            }
-            loadedPrograms.add(prog);
-            log.info("eBPF program loaded: {} ({})", prog.name, objectPath);
-
+    /**
+     * Attaches a program: sys_enter via perf_event_open, others via BPF_RAW_TRACEPOINT_OPEN.
+     */
+    private void attachProgram(BpfProg prog, String name) throws IOException {
+        log.info("Attaching raw tracepoint: name='{}'", name);
+        if (SYSCALL_PROG_NAME.equals(name)) {
+            attachSyscallTracepoint(prog, name);
+        } else {
             Handle link = prog.attachRawTracepoint(name);
             if (link == null) {
                 throw new IOException("Failed to attach raw tracepoint: " + name);
             }
             tracepointLinks.add(link);
             log.info("Attached to raw tracepoint: {}", name);
-
-        } catch (IOException e) {
-            if (prog != null) {
-                loadedPrograms.remove(prog);
-                prog.close();
-            }
-            throw e;
         }
     }
 
     /**
-     * Attaches a syscall tracepoint using {@code perf_event_open()}.
-     * {@code BPF_RAW_TRACEPOINT_OPEN} does not support syscall tracepoints
-     * on kernels &lt; 6.x, so we fall back to the legacy method:
-     * load as {@code TRACEPOINT}, read the numeric ID from debugfs,
-     * open a perf event for that ID, and attach the program via
-     * {@code PERF_EVENT_IOC_SET_BPF}.
+     * Attaches the sys_enter program via perf_event_open + PERF_EVENT_IOC_SET_BPF.
      */
-    private void attachSyscallTracepoint(String name) throws IOException {
-        String objectPath = objectPathFor(name);
-        BpfProg prog = null;
+    private void attachSyscallTracepoint(BpfProg prog, String name) throws IOException {
         PerfCounter tpCounter = null;
 
         try {
-            // Read numeric tracepoint ID from debugfs
-            String idPath = DEBUGFS + "/tracing/events/syscalls/" + name + "/id";
+            String idPath = DEBUGFS + "/tracing/events/raw_syscalls/" + name + "/id";
             String idStr = Files.readString(Path.of(idPath)).trim();
             int tpId = Integer.parseInt(idStr);
             log.info("Syscall tracepoint id for {}: {}", name, tpId);
 
-            // Load eBPF program as TRACEPOINT (not RAW_TRACEPOINT)
-            prog = BpfProg.load(objectPath, ProgType.TRACEPOINT);
-            if (prog == null) {
-                throw new IOException("Failed to load eBPF program from " + objectPath);
-            }
-            loadedPrograms.add(prog);
-            log.info("eBPF program loaded: {} ({})", prog.name, objectPath);
-
-            // Open a perf event for this tracepoint.
             PerfEvent tpEvent = PerfEvent.tracepoint(tpId);
-            tpCounter = Perf.open(
-                    tpEvent,
-                    Perf.ANY_PID,
-                    0
-            );
+            tpCounter = Perf.open(tpEvent, Perf.ANY_PID, 0);
 
             if (tpCounter == null) {
                 throw new IOException("Failed to open perf event for syscall tracepoint: " + name);
             }
 
-            // Attach the eBPF program to the perf event
             tpCounter.attachBpf(prog.fd());
-
             syscallAttachCounters.add(tpCounter);
             log.info("Attached to syscall tracepoint: {}", name);
 
@@ -284,103 +284,66 @@ public class PerfLoader implements ProgsLoader {
             if (tpCounter != null) {
                 tpCounter.close();
             }
-            if (prog != null) {
-                loadedPrograms.remove(prog);
-                prog.close();
-            }
             throw e;
         }
     }
 
-    /**
-     * Resolves the object file path for a given tracepoint name.
-     */
     private String objectPathFor(String name) {
         return bpfObjectDir + "/" + name + ".o";
     }
 
     @Override
     public void unloadAll() {
-        // Close ring buffers first (they may be actively reading)
         if (ringBuffers != null) {
             for (RawPerfRingBuffer rb : ringBuffers) {
                 if (rb != null) {
-                    try {
-                        rb.close();
-                    } catch (Exception e) {
-                        log.warn("Error closing ring buffer", e);
-                    }
+                    try { rb.close(); } catch (Exception e) { log.warn("Error closing ring buffer", e); }
                 }
             }
         }
 
-        // Close perf counters
         for (PerfCounter pc : perfCounters) {
             if (pc != null) {
-                try {
-                    pc.close();
-                } catch (Exception e) {
-                    log.warn("Error closing perf counter", e);
-                }
+                try { pc.close(); } catch (Exception e) { log.warn("Error closing perf counter", e); }
             }
         }
 
-        // Close syscall attach counters
         for (PerfCounter pc : syscallAttachCounters) {
             if (pc != null) {
-                try {
-                    pc.close();
-                } catch (Exception e) {
-                    log.warn("Error closing syscall perf counter", e);
-                }
+                try { pc.close(); } catch (Exception e) { log.warn("Error closing syscall perf counter", e); }
             }
         }
 
-        // Close tracepoint links
         for (Handle link : tracepointLinks) {
             if (link != null) {
-                try {
-                    link.close();
-                } catch (Exception e) {
-                    log.warn("Error closing tracepoint link", e);
-                }
+                try { link.close(); } catch (Exception e) { log.warn("Error closing tracepoint link", e); }
             }
         }
 
-        // Close loaded programs
         for (BpfProg prog : loadedPrograms) {
             if (prog != null) {
-                try {
-                    prog.close();
-                } catch (Exception e) {
-                    log.warn("Error closing BPF program", e);
-                }
+                try { prog.close(); } catch (Exception e) { log.warn("Error closing BPF program", e); }
             }
         }
 
-        // Close perf event array map
         if (perfEventArray != null) {
-            try {
-                perfEventArray.close();
-            } catch (Exception e) {
-                log.warn("Error closing perf event array", e);
-            }
+            try { perfEventArray.close(); } catch (Exception e) { log.warn("Error closing perf event array", e); }
+        }
+
+        try {
+            Files.deleteIfExists(Path.of(PIN_PATH));
+            log.debug("Deleted pinned map file: {}", PIN_PATH);
+        } catch (IOException e) {
+            log.warn("Failed to delete pinned map file: {}", PIN_PATH, e);
+        }
+
+        try {
+            Files.deleteIfExists(Path.of("/sys/fs/bpf/tracked_cgroups")); // TODO: точно вынести отдельно :)
+            log.debug("Deleted cgroup filter map pin");
+        } catch (IOException e) {
+            log.warn("Failed to delete cgroup filter map pin", e);
         }
 
         log.info("Unloaded all components");
     }
-
-    private void loadAndAttachTracepoint(String name, String fullSpec) {
-    String category = fullSpec.split(":")[0];
-    try {
-        if (SYSCALLS_CATEGORY.equals(category)) {
-            attachSyscallTracepoint(name);
-        } else {
-            attachRawTracepoint(name);
-        }
-    } catch (IOException e) {
-        log.error("Failed to load/attach tracepoint: {}", fullSpec, e);
-        // Continue with other tracepoints
-    }
-}
 }

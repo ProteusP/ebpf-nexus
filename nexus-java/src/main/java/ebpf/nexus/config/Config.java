@@ -7,6 +7,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.ArrayList;
 
 /**
  * Application configuration loaded from a YAML file.
@@ -18,6 +19,7 @@ public class Config {
     private RingBufferConfig ringBuffer;
     private String bpfObjectDir;
     private LoggingConfig logging;
+    private List<Long> trackedCgroups = new ArrayList<>();
 
     public List<String> getTracepoints() { return tracepoints; }
     public long getSnapshotIntervalMs() { return snapshotIntervalMs; }
@@ -30,6 +32,8 @@ public class Config {
     public void setRingBuffer(RingBufferConfig ringBuffer) { this.ringBuffer = ringBuffer; }
     public void setBpfObjectDir(String bpfObjectDir) { this.bpfObjectDir = bpfObjectDir; }
     public void setLogging(LoggingConfig logging) { this.logging = logging; }
+    public List<Long> getTrackedCgroups() { return trackedCgroups; }
+    public void setTrackedCgroups(List<Long> trackedCgroups) { this.trackedCgroups = trackedCgroups; }
 
     /**
      * Loads configuration from a YAML file.

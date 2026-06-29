@@ -7,11 +7,8 @@ val bpfBuildDir  = file("build")
 
 val bpfObjects = listOf(
     "cgroup_attach_task.bpf.c",
-    "sys_enter_sched_setattr.bpf.c",
-    "sys_enter_sched_setscheduler.bpf.c",
-    "sys_enter_setpriority.bpf.c",
-    "sys_enter_ioprio_set.bpf.c",
-    "cgroup_release.bpf.c"
+    "cgroup_release.bpf.c",
+    "sys_enter.bpf.c"
 )
 
 tasks.register("buildBpf") {
@@ -20,6 +17,11 @@ tasks.register("buildBpf") {
 
     inputs.dir(bpfSourceDir)
     outputs.dir(bpfBuildDir)
+
+    val targetArch = System.getProperty("os.arch")  // "aarch64" или "amd64"
+    val archFlag = if (targetArch == "aarch64") "__TARGET_ARCH_aarch64"
+                else if (targetArch == "amd64") "__TARGET_ARCH_x86_64"
+                else throw GradleException("Unsupported architecture: $targetArch")
 
     doLast {
         bpfBuildDir.mkdirs()
@@ -36,6 +38,7 @@ tasks.register("buildBpf") {
                     "-target", "bpf",
                     "-g",
                     "-I", ".",
+                     "-D", archFlag,
                     "-c", sourceFile.name,
                     "-o", objectFile.absolutePath
                 )

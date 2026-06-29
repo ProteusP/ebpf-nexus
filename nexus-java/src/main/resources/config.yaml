@@ -2,21 +2,21 @@
 tracepoints:
   - "cgroup:cgroup_attach_task"
   - "cgroup:cgroup_release"
-  - "syscalls:sys_enter_sched_setattr"
-  - "syscalls:sys_enter_sched_setscheduler"
-  - "syscalls:sys_enter_setpriority"
-  - "syscalls:sys_enter_ioprio_set"
+  - "raw:sys_enter"
+
+# Cgroups inode numbers to track. Empty list = track all  
+trackedCgroups: []
 
 # Snapshot interval in milliseconds
-snapshotIntervalMs: 5000
+snapshotIntervalMs: 10000
 
 # Per-CPU ring buffer settings
 ringBuffer:
-  dataPages: 16  # 16 pages = 64 KB per CPU
+  dataPages: 1  # 16 pages = 64 KB per CPU
 
 # Path to compiled eBPF object files
 bpfObjectDir: "build/dist/ebpf"
 
 # Logging
 logging:
-  level: "INFO"  # TRACE, DEBUG, INFO, WARN, ERROR
+  level: "DEBUG"  # TRACE, DEBUG, INFO, WARN, ERROR

@@ -14,6 +14,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,8 +43,9 @@ public class StateManager implements EventHandler {
 
     private final AtomicBoolean isSnapshotInProgress = new AtomicBoolean(false);
 
-    private StateSnapshot currentState;
-    private long lastSnapshotEndTime;
+    private final AtomicReference<StateSnapshot> currentStateRef = new AtomicReference<>();
+    private long lastSnapshotEndTimeNanos;
+    private long nanoOffset;
 
     private ScheduledExecutorService scheduler;
 
@@ -66,7 +68,7 @@ public class StateManager implements EventHandler {
      * @param intervalMs interval between full state reads, in milliseconds
      */
     public void start(long intervalMs) {
-        lastSnapshotEndTime = System.currentTimeMillis();
+        lastSnapshotEndTimeNanos = System.nanoTime();
         scheduler = Executors.newScheduledThreadPool(1);
 
         scheduler.scheduleAtFixedRate(
@@ -85,6 +87,12 @@ public class StateManager implements EventHandler {
      */
     @Override
     public void handle(Event event) {
+        log.info("StateManager received event: tp={} ts={}", event.getTpId(), event.getTimestamp());
+        if (nanoOffset == 0) {
+            nanoOffset = event.getTimestamp() - System.nanoTime();
+            eventBuffer.calibrate(event.getTimestamp());
+        }
+
         if (isSnapshotInProgress.get()) {
             eventBuffer.addEvent(event.copy());
         } else {
@@ -98,29 +106,31 @@ public class StateManager implements EventHandler {
             return;
         }
 
+        long snapshotStartNanos = System.nanoTime();
         eventBuffer.startBuffering();
 
         try {
             StateSnapshot freshSnapshot = procfsReader.readFullState();
             log.info("Snapshot completed, {} processes", freshSnapshot.getProcesses().size());
-
-            List<Event> bufferedEvents = eventBuffer.drain(lastSnapshotEndTime);
-            log.info("Applying {} buffered events to snapshot", bufferedEvents.size());
+             
+            List<Event> bufferedEvents = eventBuffer.drain(lastSnapshotEndTimeNanos);
+            log.info("Applying {} buffered events to snapshot, time is: {}", bufferedEvents.size(), System.nanoTime());
 
             for (Event event : bufferedEvents) {
                 applyEventToSnapshot(freshSnapshot, event);
             }
 
-            if (currentState != null) {
-                diffAndNotify(currentState, freshSnapshot);
+            StateSnapshot oldState = currentStateRef.getAndSet(freshSnapshot);
+
+            if (oldState != null) {
+                diffAndNotify(oldState, freshSnapshot);
             } else {
                 for (ProcessInfo p : freshSnapshot.getProcesses().values()) {
                     notifyProcessCreated(p);
                 }
             }
 
-            currentState = freshSnapshot;
-            lastSnapshotEndTime = System.currentTimeMillis();
+            lastSnapshotEndTimeNanos = snapshotStartNanos;
 
         } catch (IOException e) {
             log.error("Error during snapshot cycle", e);
@@ -130,8 +140,9 @@ public class StateManager implements EventHandler {
     }
 
     private void applyEventToCurrentState(Event event) {
-        if (currentState == null) return;
-        applyEventToSnapshot(currentState, event);
+        StateSnapshot state = currentStateRef.get();
+        if (state == null) return;
+        applyEventToSnapshot(state, event);
     }
 
 

@@ -8,6 +8,9 @@ import java.io.IOException;
 
 import static one.nio.util.JavaInternals.unsafe;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Low-level reader for a single CPU's perf ring buffer.
  *
@@ -34,6 +37,7 @@ import static one.nio.util.JavaInternals.unsafe;
 public class RawPerfRingBuffer implements Closeable {
 
     private static final int PAGE_SIZE = unsafe.pageSize();
+    private static final Logger log = LoggerFactory.getLogger(RawPerfRingBuffer.class);
 
     /** Offsets in {@code perf_event_mmap_page}, stable across kernel versions. */
     private static final int DATA_HEAD_OFFSET = 1024;
@@ -41,7 +45,8 @@ public class RawPerfRingBuffer implements Closeable {
     private static final int DATA_OFFSET_OFFSET = 1040;
     private static final int DATA_SIZE_OFFSET = 1048;
 
-    /** Record type for samples carrying eBPF data. */
+    /** Record types in the ring buffer. */
+    private static final int PERF_RECORD_LOST = 2;
     private static final int PERF_RECORD_SAMPLE = 9;
 
     /** Base address of the mmap region. */
@@ -61,14 +66,8 @@ public class RawPerfRingBuffer implements Closeable {
 
     private final PerfCounter counter;
 
-    /**
-     * Creates a reader for the given perf counter by mmap-ing its ring buffer.
-     *
-     * @param counter   an opened perf counter with an attached ring buffer
-     * @param dataPages number of data pages in the ring buffer (must match
-     *                  the value passed to {@code PerfOption.pages()})
-     * @throws IOException if mmap fails
-     */
+    private long totalLost = 0;
+
     public RawPerfRingBuffer(PerfCounter counter, int dataPages) throws IOException {
         this.counter = counter;
         this.totalSize = (dataPages + 1L) * PAGE_SIZE;
@@ -90,6 +89,7 @@ public class RawPerfRingBuffer implements Closeable {
         this.dataOffset = unsafe.getLong(address + DATA_OFFSET_OFFSET);
         this.dataSize = unsafe.getLong(address + DATA_SIZE_OFFSET);
         this.mask = dataSize - 1;
+        log.debug("Ring buffer ready: address={}, dataOffset={}, dataSize={}", address, dataOffset, dataSize);
     }
 
     /**
@@ -110,18 +110,33 @@ public class RawPerfRingBuffer implements Closeable {
             return -1;
         }
 
-        // Read header - may wrap, so read fields individually.
+        // Read header fields individually - they may wrap.
         int type = readIntFromRing(tail);
-        int size = readShortFromRing(tail + 4) & 0xFFFF;
+        int size = readShortFromRing(tail + 6) & 0xFFFF;
 
-        if (type != PERF_RECORD_SAMPLE || size < 8) {
-            // Skip the entire record, not just 8 bytes. Otherwise the
-            // remainder would be misinterpreted as a new header.
+        if (size < 8) {
             unsafe.putLongVolatile(null, address + DATA_TAIL_OFFSET, tail + size);
             return 0;
         }
 
-        int dataLen = size - 8;
+        // Handle lost events (ring buffer overflow)
+        if (type == PERF_RECORD_LOST) {
+            long lost = readLongFromRing(tail + 16);
+            totalLost += lost;
+
+            log.warn("Lost {} events (total {})", lost, totalLost);
+
+            unsafe.putLongVolatile(null, address + DATA_TAIL_OFFSET, tail + size);
+            return 0;
+        }
+
+        if (type != PERF_RECORD_SAMPLE) {
+            unsafe.putLongVolatile(null, address + DATA_TAIL_OFFSET, tail + size);
+            return 0;
+        }
+
+        // Data starts after 8-byte header + 4-byte raw_size = 12 bytes
+        int dataLen = size - 12;
 
         if (dataLen > buffer.length) {
             // Buffer too small - skip the record to avoid stalling.
@@ -129,8 +144,8 @@ public class RawPerfRingBuffer implements Closeable {
             return -1;
         }
 
-        // Copy raw data (after the 8-byte header), handling wrap-around.
-        copyFromRing(tail + 8, buffer, 0, dataLen);
+        // Copy raw data (after the 12-byte header), handling wrap-around.
+        copyFromRing(tail + 12, buffer, 0, dataLen);
 
         // Release the record so the kernel can reuse the space.
         unsafe.putLongVolatile(null, address + DATA_TAIL_OFFSET, tail + size);
@@ -139,35 +154,55 @@ public class RawPerfRingBuffer implements Closeable {
     }
 
     /**
-     * Reads a 4-byte integer from a potentially wrapped offset.
+     * Reads a single byte from a potentially wrapped offset.
      */
-    private int readIntFromRing(long offset) {
-        long pos = dataOffset + (offset & mask);
-        long end = address + dataOffset + dataSize;
-        if (pos + 4 <= end) {
-            return unsafe.getInt(address + pos);
-        }
-        // Wrapped: read in two parts (rare, but must be handled)
-        int first = unsafe.getByte(address + pos) & 0xFF;
-        int second = unsafe.getByte(address + pos + 1) & 0xFF;
-        int third = unsafe.getByte(address + pos + 2) & 0xFF;
-        int fourth = unsafe.getByte(address + dataOffset) & 0xFF;
-        return first | (second << 8) | (third << 16) | (fourth << 24);
+    private int readByteFromRing(long offset) {
+        long pos = (offset & mask);
+        return unsafe.getByte(address + dataOffset + pos) & 0xFF;
     }
 
     /**
      * Reads a 2-byte short from a potentially wrapped offset.
      */
     private int readShortFromRing(long offset) {
-        long pos = dataOffset + (offset & mask);
-        long end = address + dataOffset + dataSize;
-        if (pos + 2 <= end) {
-            return unsafe.getShort(address + pos) & 0xFFFF;
+        long pos = (offset & mask);
+        if (pos + 2 <= dataSize) {
+            return unsafe.getShort(address + dataOffset + pos) & 0xFFFF;
         }
-        // Wrapped: read in two parts
-        int first = unsafe.getByte(address + pos) & 0xFF;
-        int second = unsafe.getByte(address + dataOffset) & 0xFF;
+        // Wrapped: read in two bytes
+        int first = readByteFromRing(offset) & 0xFF;
+        int second = readByteFromRing(offset + 1) & 0xFF;
         return first | (second << 8);
+    }
+
+    /**
+     * Reads a 4-byte integer from a potentially wrapped offset.
+     */
+    private int readIntFromRing(long offset) {
+        long pos = (offset & mask);
+        if (pos + 4 <= dataSize) {
+            return unsafe.getInt(address + dataOffset + pos);
+        }
+        // Wrapped: read in four bytes
+        int first = readByteFromRing(offset) & 0xFF;
+        int second = readByteFromRing(offset + 1) & 0xFF;
+        int third = readByteFromRing(offset + 2) & 0xFF;
+        int fourth = readByteFromRing(offset + 3) & 0xFF;
+        return first | (second << 8) | (third << 16) | (fourth << 24);
+    }
+
+    /**
+     * Reads an 8-byte long from a potentially wrapped offset.
+     */
+    private long readLongFromRing(long offset) {
+        long pos = (offset & mask);
+        if (pos + 8 <= dataSize) {
+            return unsafe.getLong(address + dataOffset + pos);
+        }
+        // Wrapped: read in two 4-byte parts
+        long first = readIntFromRing(offset) & 0xFFFFFFFFL;
+        long second = readIntFromRing(offset + 4) & 0xFFFFFFFFL;
+        return first | (second << 32);
     }
 
     /**
