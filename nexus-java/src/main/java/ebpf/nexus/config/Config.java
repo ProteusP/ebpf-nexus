@@ -20,6 +20,7 @@ public class Config {
     private String bpfObjectDir;
     private LoggingConfig logging;
     private List<Long> trackedCgroups = new ArrayList<>();
+    private int metricsPort = 8080;
 
     public List<String> getTracepoints() { return tracepoints; }
     public long getSnapshotIntervalMs() { return snapshotIntervalMs; }
@@ -34,6 +35,8 @@ public class Config {
     public void setLogging(LoggingConfig logging) { this.logging = logging; }
     public List<Long> getTrackedCgroups() { return trackedCgroups; }
     public void setTrackedCgroups(List<Long> trackedCgroups) { this.trackedCgroups = trackedCgroups; }
+    public int getMetricsPort() { return metricsPort; }
+    public void setMetricsPort(int metricsPort) { this.metricsPort = metricsPort; }
 
     /**
      * Loads configuration from a YAML file.

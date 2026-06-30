@@ -11,6 +11,8 @@ import static one.nio.util.JavaInternals.unsafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import ebpf.nexus.metrics.Metrics;
+
 /**
  * Low-level reader for a single CPU's perf ring buffer.
  *
@@ -106,6 +108,11 @@ public class RawPerfRingBuffer implements Closeable {
         // Plain read: only this consumer updates tail.
         long tail = unsafe.getLong(address + DATA_TAIL_OFFSET);
 
+        double ratio = (double)(head - tail) / dataSize;
+        
+        Metrics.ringBufferFillRatio.set(ratio);
+        
+
         if (tail >= head) {
             return -1;
         }
@@ -123,6 +130,7 @@ public class RawPerfRingBuffer implements Closeable {
         if (type == PERF_RECORD_LOST) {
             long lost = readLongFromRing(tail + 16);
             totalLost += lost;
+            Metrics.eventsLostTotal.inc(lost);
 
             log.warn("Lost {} events (total {})", lost, totalLost);
 

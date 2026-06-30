@@ -7,6 +7,7 @@ import ebpf.nexus.handlers.LoggingHandler;
 import ebpf.nexus.state.ProcfsReader;
 import ebpf.nexus.state.EventBuffer;
 import ebpf.nexus.state.StateManager;
+import ebpf.nexus.metrics.Metrics;
 
 import java.util.Scanner;
 
@@ -62,6 +63,10 @@ public class Main {
             OneEventReader reader = new OneEventReader(loader.getRingBuffers());
             reader.setHandler(stateManager);
 
+            int metricsPort = config.getMetricsPort();
+            Metrics.start(metricsPort);
+            log.info("Metrics server started on port {}", metricsPort);
+
             Thread readerThread = new Thread(reader::start, "ebpf-event-reader");
             readerThread.setDaemon(true);
             readerThread.start();
@@ -82,6 +87,7 @@ public class Main {
             log.info("Stopping...");
             stateManager.stop();
             reader.stop();
+            Metrics.stop();
             readerThread.join(2000);
             loader.unloadAll();
 

@@ -8,11 +8,11 @@ tracepoints:
 trackedCgroups: []
 
 # Snapshot interval in milliseconds
-snapshotIntervalMs: 10000
+snapshotIntervalMs: 5000
 
 # Per-CPU ring buffer settings
 ringBuffer:
-  dataPages: 1  # 16 pages = 64 KB per CPU
+  dataPages: 16  # 16 pages = 64 KB per CPU
 
 # Path to compiled eBPF object files
 bpfObjectDir: "build/dist/ebpf"
@@ -20,3 +20,5 @@ bpfObjectDir: "build/dist/ebpf"
 # Logging
 logging:
   level: "DEBUG"  # TRACE, DEBUG, INFO, WARN, ERROR
+
+metricsPort: 8080

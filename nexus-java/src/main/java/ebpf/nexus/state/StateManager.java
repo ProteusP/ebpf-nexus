@@ -6,6 +6,7 @@ import ebpf.nexus.model.Event;
 import ebpf.nexus.model.StateSnapshot;
 import ebpf.nexus.model.ProcessInfo;
 import ebpf.nexus.model.CgroupInfo;
+import ebpf.nexus.metrics.Metrics;
 
 import java.io.IOException;
 import java.util.List;
@@ -131,6 +132,8 @@ public class StateManager implements EventHandler {
             }
 
             lastSnapshotEndTimeNanos = snapshotStartNanos;
+            Metrics.snapshotProcesses.set(freshSnapshot.getProcesses().size());
+            Metrics.snapshotDuration.observe((System.nanoTime() - snapshotStartNanos) / 1e9);
 
         } catch (IOException e) {
             log.error("Error during snapshot cycle", e);
@@ -235,6 +238,7 @@ public class StateManager implements EventHandler {
 
     private void notifyProcessCreated(ProcessInfo process) {
         for (StateChangeCallback callback : callbacks) {
+            Metrics.stateChangesTotal.labels("created").inc();
             try {
                 callback.onProcessCreated(process);
             } catch (Exception e) {
@@ -245,6 +249,7 @@ public class StateManager implements EventHandler {
 
     private void notifyProcessChanged(ProcessInfo oldState, ProcessInfo newState) {
         for (StateChangeCallback callback : callbacks) {
+            Metrics.stateChangesTotal.labels("changed").inc();
             try {
                 callback.onProcessChanged(oldState, newState);
             } catch (Exception e) {
@@ -255,6 +260,7 @@ public class StateManager implements EventHandler {
 
     private void notifyProcessTerminated(int pid) {
         for (StateChangeCallback callback : callbacks) {
+            Metrics.stateChangesTotal.labels("terminated").inc();
             try {
                 callback.onProcessTerminated(pid);
             } catch (Exception e) {
