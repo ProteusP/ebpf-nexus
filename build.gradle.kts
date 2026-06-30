@@ -1,46 +1,59 @@
 plugins {
     id("java")
-    id("application")
 }
 
-group = "ebpf-nexus"
-version = "1.0-SNAPSHOT"
+group = "ebpf.nexus"
+version = "1.0.0"
 
-var mainClassName = "ebpf.nexus.Main"
-
-repositories {
-    mavenCentral()
-}
-
-dependencies {
-    implementation(files("libs/one-nio.jar"))
-    implementation("org.slf4j:slf4j-api:2.0.9")
-}
-
-application{
-    mainClass.set(mainClassName)
-}
-
-tasks.register<Jar>("fatJar") {
-    archiveBaseName.set("${project.name}-all")
-    archiveVersion.set(project.version.toString())
-
-    manifest {
-        attributes(
-            "Main-Class" to mainClassName
-        )
+subprojects {
+    repositories {
+        mavenCentral()
     }
+}
 
-    
-    from(sourceSets.main.get().output)
+tasks.register("buildAll") {
+    group = "build"
+    description = "Builds Java SDK and eBPF programs"
+    dependsOn(":nexus-java:build", ":ebpf:buildBpf")
+}
 
-    
-    from({
-        configurations.runtimeClasspath.get().map { 
-            if (it.isDirectory) it else zipTree(it) 
-        }
-    }) 
-        
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    
+tasks.register("cleanAll") {
+    group = "build"
+    description = "Cleans all submodules"
+    dependsOn(":nexus-java:clean", ":ebpf:cleanBpf")
+}
+
+val distributionDir = layout.buildDirectory.dir("dist")
+
+// Copy eBPF objects into distribution
+tasks.register<Copy>("copyBpfObjects") {
+    from("ebpf/build")
+    into(distributionDir.map { it.dir("ebpf") })
+    include("*.o")
+    dependsOn(":ebpf:buildBpf")
+}
+
+// Copy fat JAR into distribution
+tasks.register<Copy>("copyFatJar") {
+    from("nexus-java/build/libs")
+    into(distributionDir)
+    include("*-all.jar")
+    dependsOn(":nexus-java:fatJar")
+}
+
+// Assemble complete distribution
+tasks.register("assembleDist") {
+    group = "distribution"
+    description = "Creates complete distribution with JAR, eBPF objects, and run script"
+    dependsOn("copyBpfObjects", "copyFatJar")
+}
+
+// Create a tarball of the distribution
+tasks.register<Tar>("distTar") {
+    group = "distribution"
+    description = "Creates a tarball of the full distribution"
+    dependsOn("assembleDist")
+    compression = Compression.GZIP
+    archiveFileName.set("nexus-${project.version}.tar.gz")
+    from(distributionDir)
 }

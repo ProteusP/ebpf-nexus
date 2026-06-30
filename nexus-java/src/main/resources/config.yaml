@@ -1,0 +1,24 @@
+# Tracepoints to monitor (category:name format)
+tracepoints:
+  - "cgroup:cgroup_attach_task"
+  - "cgroup:cgroup_release"
+  - "raw:sys_enter"
+
+# Cgroups inode numbers to track. Empty list = track all  
+trackedCgroups: []
+
+# Snapshot interval in milliseconds
+snapshotIntervalMs: 5000
+
+# Per-CPU ring buffer settings
+ringBuffer:
+  dataPages: 16  # 16 pages = 64 KB per CPU
+
+# Path to compiled eBPF object files
+bpfObjectDir: "build/dist/ebpf"
+
+# Logging
+logging:
+  level: "DEBUG"  # TRACE, DEBUG, INFO, WARN, ERROR
+
+metricsPort: 8080
